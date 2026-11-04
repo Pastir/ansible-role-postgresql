@@ -1,0 +1,52 @@
+---
+# 1. A reloadable parameter change is applied without restart.
+# 2. A restart-only parameter is reported, not applied (restart not allowed).
+# 3. Requesting another minor version must fail without postgresql_allow_upgrade.
+- name: Change parameters on a running server
+  hosts: standalone
+  become: true
+  tasks:
+    - name: Remember postmaster start time
+      ansible.builtin.command: psql -XAtq -c "SELECT pg_postmaster_start_time()"
+      become: true
+      become_user: postgres
+      register: __start_before
+      changed_when: false
+
+    - name: Apply changed parameters
+      ansible.builtin.include_role:
+        name: pastir.postgresql
+      vars:
+        postgresql_conf:
+          max_connections: 200
+          work_mem: 32MB
+          log_min_duration_statement: 1000
+          listen_addresses: "'*'"
+
+    - name: Server was not restarted
+      ansible.builtin.command: psql -XAtq -c "SELECT pg_postmaster_start_time()"
+      become: true
+      become_user: postgres
+      register: __start_after
+      changed_when: false
+      failed_when: __start_after.stdout != __start_before.stdout
+
+- name: Version guard
+  hosts: pg-standalone-noble
+  become: true
+  tasks:
+    - name: Switching the minor version implicitly must be refused
+      block:
+        - name: Request another minor version
+          ansible.builtin.include_role:
+            name: pastir.postgresql
+          vars:
+            postgresql_minor_version: "15.18"
+
+        - name: The role must not get here
+          ansible.builtin.fail:
+            msg: Version guard did not stop the role
+      rescue:
+        - name: The guard is what stopped the role
+          ansible.builtin.assert:
+            that: "'postgresql_allow_upgrade' in ansible_failed_result.msg"

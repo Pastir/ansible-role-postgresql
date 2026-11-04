@@ -1,0 +1,107 @@
+---
+- name: Check whether the cluster config directory exists
+  ansible.builtin.stat:
+    path: "{{ postgresql_config_dir }}"
+  register: __postgresql_cfgdir
+
+- name: Set cluster start mode (start.conf)
+  ansible.builtin.copy:
+    dest: "{{ postgresql_config_dir }}/start.conf"
+    content: |
+      # Managed by Ansible (pastir.postgresql), do not edit.
+      # auto: started by the init script / manual: only pg_ctlcluster / disabled: never
+      {{ postgresql_start_conf }}
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  when: __postgresql_cfgdir.stat.exists
+
+- name: Make sure conf.d is loaded by postgresql.conf
+  when:
+    - __postgresql_cfgdir.stat.exists
+    - postgresql_conf | length > 0
+  block:
+    - name: Create conf.d directory
+      ansible.builtin.file:
+        path: "{{ postgresql_config_dir }}/conf.d"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0755"
+
+    - name: Enable include_dir = 'conf.d'
+      ansible.builtin.lineinfile:
+        path: "{{ postgresql_config_dir }}/postgresql.conf"
+        regexp: "^#?\\s*include_dir\\s*=\\s*'conf\\.d'"
+        line: "include_dir = 'conf.d'"
+      notify: Reload postgresql
+
+- name: Write configuration parameters
+  ansible.builtin.template:
+    src: postgresql.ansible.conf.j2
+    dest: "{{ postgresql_config_dir }}/conf.d/{{ postgresql_conf_file }}"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  when:
+    - __postgresql_cfgdir.stat.exists
+    - postgresql_conf | length > 0
+  notify: Reload postgresql
+
+- name: Write pg_hba.conf
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ postgresql_config_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  when:
+    - __postgresql_cfgdir.stat.exists
+    - postgresql_hba_entries | length > 0
+  notify: Reload postgresql
+
+- name: Enable and start the cluster
+  ansible.builtin.systemd_service:
+    name: "{{ __postgresql_service }}"
+    enabled: "{{ postgresql_start_conf == 'auto' }}"
+    state: started
+  when:
+    - postgresql_manage_service
+    - __postgresql_cfgdir.stat.exists
+    - postgresql_start_conf != 'disabled'
+
+- name: Apply configuration changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Check parameters waiting for a restart
+  ansible.builtin.command:
+    cmd: >-
+      {{ __postgresql_bin_dir }}/psql -XAtq -d postgres
+      -c "SELECT string_agg(name, ',') FROM pg_settings WHERE pending_restart"
+  become: true
+  become_user: postgres
+  register: __postgresql_pending
+  changed_when: false
+  check_mode: false
+  when:
+    - postgresql_manage_service
+    - __postgresql_cfgdir.stat.exists
+    - postgresql_start_conf != 'disabled'
+    - __postgresql_manage_config | bool
+
+- name: Restart the cluster for parameters that require it
+  ansible.builtin.systemd_service:
+    name: "{{ __postgresql_service }}"
+    state: restarted
+  when:
+    - __postgresql_pending.stdout | default('') | length > 0
+    - postgresql_restart_allowed
+
+- name: Report parameters waiting for a restart
+  ansible.builtin.debug:
+    msg: >-
+      PostgreSQL needs a restart to apply: {{ __postgresql_pending.stdout }}.
+      Restart it in a maintenance window or set postgresql_restart_allowed: true.
+  when:
+    - __postgresql_pending.stdout | default('') | length > 0
+    - not postgresql_restart_allowed

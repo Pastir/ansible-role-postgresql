@@ -1,0 +1,8 @@
+{{ ansible_managed | comment }}
+# TYPE  DATABASE  USER  ADDRESS  METHOD  [OPTIONS]
+{% for e in postgresql_hba_entries %}
+{% if e.comment is defined %}
+# {{ e.comment }}
+{% endif %}
+{{ e.type }}	{{ e.database | default('all') }}	{{ e.user | default('all') }}	{{ e.address | default('') }}	{{ e.method }}{{ ('	' ~ e.options) if e.options is defined else '' }}
+{% endfor %}

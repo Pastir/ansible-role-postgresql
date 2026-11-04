@@ -1,9 +1,22 @@
 ---
-# Include variable based on the distribution.
-- name: Include variable based on the distribution.
-  ansible.builtin.include_vars: "vars/{{ ansible_distribution }}.yml"
+- name: Validate input
+  ansible.builtin.assert:
+    that:
+      - postgresql_version | string is match('^\d+$')
+      - postgresql_minor_version | string == '' or postgresql_minor_version | string is match('^' ~ postgresql_version ~ '\.\d+$')
+      - postgresql_start_conf in ['auto', 'manual', 'disabled']
+      - postgresql_hba_entries | rejectattr('type', 'defined') | list | length == 0
+      - postgresql_hba_entries | rejectattr('method', 'defined') | list | length == 0
+    fail_msg: >-
+      postgresql_version must be a major version ("15"), postgresql_minor_version must be "<major>.<minor>",
+      postgresql_start_conf must be auto|manual|disabled, every hba entry needs type and method.
+    quiet: true
+  tags: [postgresql, postgresql_install, postgresql_config]
 
-# Include tasks
-- name: Include tasks based on the distribution.
-  include_tasks:
-    file: "{{ ansible_distribution }}.yml"
+- name: Install PostgreSQL
+  ansible.builtin.import_tasks: install.yml
+  tags: [postgresql, postgresql_install]
+
+- name: Configure PostgreSQL
+  ansible.builtin.import_tasks: configure.yml
+  tags: [postgresql, postgresql_config]

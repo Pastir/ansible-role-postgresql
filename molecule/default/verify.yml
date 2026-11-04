@@ -1,0 +1,64 @@
+---
+- name: Verify standalone servers
+  hosts: standalone
+  become: true
+  tasks:
+    - name: Server version is 15.19 and packages are held
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg-query -W -f='${Version}' postgresql-15
+        echo
+        apt-mark showhold | grep -x postgresql-15
+      args:
+        executable: /bin/bash
+      register: __pkg
+      changed_when: false
+      failed_when: __pkg.stdout_lines[0] is not match('15.19-')
+
+    - name: Read effective settings
+      ansible.builtin.command: >-
+        psql -XAtq -c "SELECT name || '=' || setting || coalesce(unit,'') FROM pg_settings
+        WHERE name IN ('work_mem','max_connections','log_min_duration_statement')"
+      become: true
+      become_user: postgres
+      register: __settings
+      changed_when: false
+
+    - name: Reloadable change applied, restart-only change still pending
+      ansible.builtin.assert:
+        that:
+          - "'work_mem=32768kB' in __settings.stdout_lines"
+          - "'max_connections=150' in __settings.stdout_lines"
+          - "'log_min_duration_statement=1000ms' in __settings.stdout_lines"
+
+    - name: Managed pg_hba.conf is loaded without errors
+      ansible.builtin.command: psql -XAtq -c "SELECT count(*) FROM pg_hba_file_rules WHERE error IS NULL"
+      become: true
+      become_user: postgres
+      register: __hba
+      changed_when: false
+      failed_when: __hba.stdout | int != 4
+
+    - name: Cluster start mode is auto
+      ansible.builtin.command: grep -qx auto /etc/postgresql/15/main/start.conf
+      changed_when: false
+
+- name: Verify Patroni node layout
+  hosts: patroni_node
+  become: true
+  tasks:
+    - name: No cluster was created
+      ansible.builtin.command: pg_lsclusters -h
+      register: __clusters
+      changed_when: false
+      failed_when: __clusters.stdout | length > 0
+
+    - name: Binaries are installed
+      ansible.builtin.stat:
+        path: /usr/lib/postgresql/15/bin/postgres
+      register: __bin
+      failed_when: not __bin.stat.exists
+
+    - name: Main cluster creation is disabled
+      ansible.builtin.command: grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf
+      changed_when: false

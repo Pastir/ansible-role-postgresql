@@ -1,1 +1,46 @@
-__postgresql_version: "17"
+---
+# --- Version / packages -------------------------------------------------------
+# Major version.
+postgresql_version: "15"
+# Exact upstream version to install and hold, e.g. "15.19". Empty -> latest of the major version.
+postgresql_minor_version: ""
+# Server packages. Extra packages (extensions etc.) go to postgresql_extra_packages.
+postgresql_packages:
+  - "postgresql-{{ postgresql_version }}"
+  - "postgresql-client-{{ postgresql_version }}"
+postgresql_extra_packages: []
+# Allow the role to change the installed minor version (restarts the server!).
+postgresql_allow_upgrade: false
+# Hold installed server packages so that "apt upgrade" does not touch them.
+postgresql_hold: true
+
+# --- PGDG repository ------------------------------------------------------------
+postgresql_repo_enabled: true
+postgresql_repo_url: https://apt.postgresql.org/pub/repos/apt
+postgresql_repo_key_url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+
+# --- Cluster ----------------------------------------------------------------------
+postgresql_cluster_name: main
+postgresql_data_dir: "/var/lib/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_name }}"
+postgresql_config_dir: "/etc/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_name }}"
+# Let the package create the "main" cluster on first install.
+# Set to false on nodes managed by Patroni (Patroni runs initdb itself).
+postgresql_create_main_cluster: true
+# How postgresql-common starts the cluster: auto | manual | disabled.
+# Use "manual" on Patroni nodes: the cluster must never be started by systemd behind Patroni's back.
+postgresql_start_conf: auto
+# Manage the postgresql@<version>-<cluster> service (enable + start). Set false on Patroni nodes.
+postgresql_manage_service: true
+
+# --- Configuration (only for clusters NOT managed by Patroni) ---------------------
+# Parameters written to <config_dir>/conf.d/<postgresql_conf_file>. postgresql.conf itself is not touched.
+# Example: { max_connections: 200, shared_buffers: 4GB, listen_addresses: "'*'" }
+# String values that need quotes in postgresql.conf must include them.
+postgresql_conf: {}
+postgresql_conf_file: 90-ansible.conf
+# pg_hba.conf entries. Empty list -> pg_hba.conf is not managed.
+# Each item: { type, database, user, address (optional), method, options (optional), comment (optional) }
+postgresql_hba_entries: []
+# Restart the cluster automatically if a changed parameter requires it.
+# false -> the role only reports parameters pending restart.
+postgresql_restart_allowed: false

@@ -1,0 +1,13 @@
+---
+__postgresql_keyring: /etc/apt/keyrings/postgresql-pgdg.asc
+__postgresql_service: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+__postgresql_bin_dir: "/usr/lib/postgresql/{{ postgresql_version }}/bin"
+__postgresql_server_package: "postgresql-{{ postgresql_version }}"
+# Packages pinned to postgresql_minor_version (others follow the repository).
+__postgresql_pinned_packages:
+  - "postgresql-{{ postgresql_version }}"
+  - "postgresql-client-{{ postgresql_version }}"
+__postgresql_install_list: >-
+  {{ (postgresql_packages | map('regex_replace', '^(' ~ (__postgresql_pinned_packages | join('|')) ~ ')$',
+       '\1=' ~ postgresql_minor_version ~ '-*') | list) if postgresql_minor_version else postgresql_packages }}
+__postgresql_manage_config: "{{ (postgresql_conf | length > 0) or (postgresql_hba_entries | length > 0) }}"

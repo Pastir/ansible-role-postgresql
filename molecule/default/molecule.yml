@@ -1,0 +1,60 @@
+---
+# pg-standalone-*: managed standalone server with config and pg_hba.
+# pg-patroni-node: package only, no auto-created cluster, start.conf manual (Patroni node layout).
+dependency:
+  name: galaxy
+  enabled: false
+driver:
+  name: podman
+platforms:
+  - name: pg-standalone-noble
+    image: docker.io/library/ubuntu:24.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    groups: [standalone]
+  - name: pg-standalone-resolute
+    image: docker.io/library/ubuntu:26.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    groups: [standalone]
+  - name: pg-patroni-node
+    image: docker.io/library/ubuntu:24.04
+    dockerfile: Dockerfile.j2
+    command: /lib/systemd/systemd
+    systemd: always
+    groups: [patroni_node]
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      all:
+        postgresql_version: "15"
+        postgresql_minor_version: "15.19"
+      standalone:
+        postgresql_conf:
+          max_connections: 150
+          work_mem: 16MB
+          log_min_duration_statement: 1000
+          listen_addresses: "'*'"
+        postgresql_hba_entries:
+          - {type: local, database: all, user: postgres, method: peer}
+          - {type: local, database: all, user: all, method: peer}
+          - {type: host, database: all, user: all, address: 127.0.0.1/32, method: scram-sha-256}
+          - {type: host, database: app, user: app, address: 10.0.0.0/8, method: scram-sha-256, comment: application}
+      patroni_node:
+        postgresql_create_main_cluster: false
+        postgresql_start_conf: manual
+        postgresql_manage_service: false
+scenario:
+  test_sequence:
+    - destroy
+    - create
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy
+verifier:
+  name: ansible

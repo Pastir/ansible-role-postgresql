@@ -1,23 +1,18 @@
+---
 galaxy_info:
   author: Pastir Ivan
-  description: Install PostgreSQL
   role_name: postgresql
-
-  license: Apache License, Version 2.0
-
-  min_ansible_version: "2.9"
-
+  namespace: pastir
+  description: Install PostgreSQL from PGDG with version pinning; optional standalone config, pg_hba and start mode
+  license: Apache-2.0
+  min_ansible_version: "2.16"
   platforms:
     - name: Ubuntu
       versions:
-        - 20
-        - 22
-        - 24
-
+        - noble
+        - resolute
   galaxy_tags:
     - postgresql
-    - opensource
-    - install
-    - ubuntu
-
+    - database
+    - pgdg
 dependencies: []

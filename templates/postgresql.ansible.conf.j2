@@ -1,0 +1,5 @@
+{{ ansible_managed | comment }}
+# Overrides postgresql.conf (loaded via include_dir = 'conf.d').
+{% for name, value in postgresql_conf | dictsort %}
+{{ name }} = {{ value if value is string else (value | string | lower if value is boolean else value) }}
+{% endfor %}

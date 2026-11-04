@@ -1,0 +1,73 @@
+---
+- name: Add PGDG repository
+  when: postgresql_repo_enabled
+  block:
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download PGDG signing key
+      ansible.builtin.get_url:
+        url: "{{ postgresql_repo_key_url }}"
+        dest: "{{ __postgresql_keyring }}"
+        mode: "0644"
+
+    - name: Add PGDG apt source
+      ansible.builtin.deb822_repository:
+        name: pgdg
+        types: [deb]
+        uris: ["{{ postgresql_repo_url }}"]
+        suites: ["{{ ansible_facts['distribution_release'] }}-pgdg"]
+        components: [main]
+        signed_by: "{{ __postgresql_keyring }}"
+        install_python_debian: true
+      register: __postgresql_repo
+
+# Must exist before the server package is installed for the first time.
+- name: Configure automatic creation of the main cluster
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql-common/createcluster.conf
+    regexp: '^#?\s*create_main_cluster\s*='
+    line: "create_main_cluster = {{ postgresql_create_main_cluster | string | lower }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Gather installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+# A minor upgrade restarts the server: never do it implicitly on a running host.
+- name: Refuse implicit version change of an installed server
+  ansible.builtin.assert:
+    that:
+      - postgresql_allow_upgrade or
+        ansible_facts.packages[__postgresql_server_package][0].version is match(postgresql_minor_version ~ '-')
+    fail_msg: >-
+      {{ __postgresql_server_package }} {{ ansible_facts.packages[__postgresql_server_package][0].version }} is installed,
+      but {{ postgresql_minor_version }} is required. Run with -e postgresql_allow_upgrade=true in a maintenance window
+      (on Patroni: replicas first, then switchover, then the old leader).
+    quiet: true
+  when:
+    - postgresql_minor_version | length > 0
+    - __postgresql_server_package in ansible_facts.packages
+
+- name: Install PostgreSQL packages
+  ansible.builtin.apt:
+    name: "{{ __postgresql_install_list + postgresql_extra_packages }}"
+    state: present
+    update_cache: true
+    # Refresh right away when the repository was just added.
+    cache_valid_time: "{{ 0 if (__postgresql_repo is defined and __postgresql_repo is changed) else 3600 }}"
+    allow_change_held_packages: true
+    allow_downgrade: false
+
+- name: Hold PostgreSQL packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ __postgresql_pinned_packages }}"
+  when: postgresql_hold and not ansible_check_mode
