@@ -45,3 +45,41 @@ postgresql_hba_entries: []
 # Restart the cluster automatically if a changed parameter requires it.
 # false -> the role only reports parameters pending restart.
 postgresql_restart_allowed: false
+
+# --- Users, databases, privileges (managed on the primary only) ------------------
+# Roles (users). Each item: name (required), password (plaintext, optional; hashed by PostgreSQL according
+# to password_encryption), role_attr_flags (default "LOGIN", e.g. "LOGIN,CREATEDB"), conn_limit (optional),
+# update_password (always|on_create, default postgresql_users_update_password), groups (list of group roles
+# to grant, optional), state (present|absent).
+# Without password an existing password is never touched (e.g. users with certificate authentication).
+# Group roles are normal items without password: { name: readonly, role_attr_flags: NOLOGIN }. All roles are
+# created first, memberships are granted after that.
+# state: absent runs DROP ROLE without CASCADE: it fails if the role still owns objects or has privileges.
+# Take passwords from a secret store (Vault), never commit them.
+postgresql_users: []
+# always: set the password when it differs (scram/md5 hashes are compared, no change if equal).
+# on_create: set the password only when the role is created (also ignores conn_limit changes of existing roles).
+postgresql_users_update_password: always
+# false: memberships are only added, other memberships of the user are kept.
+# true: users that have "groups" defined become members of exactly these groups (unlisted ones are revoked;
+# groups: [] revokes all).
+postgresql_users_exclusive_groups: false
+# Databases. Each item: name (required), owner, encoding, lc_collate, lc_ctype, template, state (present|absent).
+# Without owner the owner of an existing database is not changed.
+postgresql_databases: []
+# Dropping a database (state: absent) is refused unless this is true.
+postgresql_allow_drop_database: false
+# Privileges (community.postgresql.postgresql_privs). Each item: database (required), roles (required, comma
+# separated), privs (required, e.g. "CONNECT,CREATE"), type (default "database"), objs, schema, state.
+postgresql_privileges: []
+# Manage the objects above only where pg_is_in_recovery() is false (standalone server or the cluster leader).
+# Replicas are skipped; they receive the objects by replication.
+postgresql_objects_primary_only: true
+# Seconds to wait for the local instance to accept connections. If it is still down (e.g. a Patroni node before
+# Patroni is started), objects are skipped with a message when postgresql_manage_service is false or in --check,
+# otherwise the role fails.
+postgresql_objects_wait_timeout: 30
+# Connection: as OS user postgres over the local unix socket (peer authentication).
+postgresql_objects_login_unix_socket: /var/run/postgresql
+postgresql_objects_port: 5432
+postgresql_objects_login_user: postgres

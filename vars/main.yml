@@ -11,3 +11,10 @@ __postgresql_install_list: >-
   {{ (postgresql_packages | map('regex_replace', '^(' ~ (__postgresql_pinned_packages | join('|')) ~ ')$',
        '\1=' ~ postgresql_minor_version ~ '-*') | list) if postgresql_minor_version else postgresql_packages }}
 __postgresql_manage_config: "{{ (postgresql_conf | length > 0) or (postgresql_hba_entries | length > 0) }}"
+__postgresql_manage_objects: >-
+  {{ (postgresql_users | length > 0) or (postgresql_databases | length > 0) or (postgresql_privileges | length > 0) }}
+__postgresql_users_present: "{{ postgresql_users | rejectattr('state', 'defined') | list
+  + postgresql_users | selectattr('state', 'defined') | selectattr('state', 'eq', 'present') | list }}"
+__postgresql_users_absent: "{{ postgresql_users | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+# Names only (no passwords) of present users that have "groups" defined.
+__postgresql_users_with_groups: "{{ __postgresql_users_present | selectattr('groups', 'defined') | map(attribute='name') | list }}"

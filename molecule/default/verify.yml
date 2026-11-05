@@ -73,3 +73,44 @@
     - name: Main cluster creation is disabled
       ansible.builtin.command: grep -qx 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf
       changed_when: false
+
+- name: Verify users, databases and privileges
+  hosts: standalone
+  become: true
+  tasks:
+    - name: User app_user logs in to appdb over TCP with its password (scram-sha-256)
+      ansible.builtin.command: >-
+        psql -XAtq -h 127.0.0.1 -U app_user -d appdb
+        -c "SELECT current_user || ',' || (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'appdb')"
+      environment:
+        PGPASSWORD: "app'pass#1"
+      register: __login
+      changed_when: false
+      failed_when: __login.stdout != 'app_user,app_user'
+
+    - name: Read role attributes, password hash type, encoding and the grant
+      ansible.builtin.command: >-
+        psql -XAtq -c "SELECT r.rolcanlogin || ',' || r.rolcreatedb || ',' || r.rolconnlimit || ','
+        || left(a.rolpassword, 13) || ',' || pg_encoding_to_char(d.encoding) || ','
+        || has_database_privilege('report_user', 'appdb', 'CREATE')
+        FROM pg_roles r JOIN pg_authid a ON a.oid = r.oid, pg_database d
+        WHERE r.rolname = 'app_user' AND d.datname = 'appdb'"
+      become: true
+      become_user: postgres
+      register: __attrs
+      changed_when: false
+      failed_when: __attrs.stdout != 'true,true,20,SCRAM-SHA-256,UTF8,true'
+
+    - name: User report_user logs in with its password
+      ansible.builtin.command: psql -XAtq -h 127.0.0.1 -U report_user -d appdb -c "SELECT 1"
+      environment:
+        PGPASSWORD: report pass 2
+      changed_when: false
+
+- name: Verify that objects were skipped on the Patroni-style node
+  hosts: patroni_node
+  become: true
+  tasks:
+    - name: Module psycopg2 is installed for the modules
+      ansible.builtin.command: python3 -c "import psycopg2"
+      changed_when: false

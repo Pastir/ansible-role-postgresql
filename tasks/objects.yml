@@ -1,0 +1,188 @@
+---
+# Users, databases and privileges. Changes are made only on the primary (pg_is_in_recovery() = false),
+# so the same play works for a standalone server and for every node of a Patroni cluster.
+- name: Validate users, databases and privileges
+  ansible.builtin.assert:
+    that:
+      - postgresql_users_update_password in ['always', 'on_create']
+      - postgresql_users | selectattr('groups', 'defined') | map(attribute='groups')
+        | reject('sequence') | list | length == 0
+      - postgresql_users | selectattr('groups', 'defined') | map(attribute='groups')
+        | select('string') | list | length == 0
+      - postgresql_users | rejectattr('name', 'defined') | list | length == 0
+      - postgresql_users | selectattr('state', 'defined') | rejectattr('state', 'in', ['present', 'absent']) | list | length == 0
+      - postgresql_users | selectattr('update_password', 'defined')
+        | rejectattr('update_password', 'in', ['always', 'on_create']) | list | length == 0
+      - postgresql_databases | rejectattr('name', 'defined') | list | length == 0
+      - postgresql_databases | selectattr('state', 'defined') | rejectattr('state', 'in', ['present', 'absent']) | list | length == 0
+      - postgresql_privileges | rejectattr('database', 'defined') | list | length == 0
+      - postgresql_privileges | rejectattr('roles', 'defined') | list | length == 0
+      - postgresql_privileges | rejectattr('privs', 'defined') | list | length == 0
+    fail_msg: >-
+      Every postgresql_users item needs name, every postgresql_databases item needs name, every
+      postgresql_privileges item needs database, roles and privs; state must be present|absent,
+      update_password must be always|on_create, groups must be a list.
+    quiet: true
+
+- name: Refuse to drop databases without postgresql_allow_drop_database
+  ansible.builtin.assert:
+    that: postgresql_allow_drop_database or __postgresql_dbs_to_drop | length == 0
+    fail_msg: >-
+      postgresql_databases asks to DROP {{ __postgresql_dbs_to_drop | join(', ') }}. This deletes all data in it.
+      Set postgresql_allow_drop_database: true (e.g. -e postgresql_allow_drop_database=true) to confirm.
+    quiet: true
+  vars:
+    __postgresql_dbs_to_drop: "{{ postgresql_databases | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | map(attribute='name') | list }}"
+
+- name: Install psycopg2 for community.postgresql modules
+  ansible.builtin.apt:
+    name: python3-psycopg2
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  register: __postgresql_psycopg
+  tags: [postgresql_install]
+
+- name: Wait for the local instance to accept connections
+  ansible.builtin.shell: |
+    for _ in $(seq 0 {{ postgresql_objects_wait_timeout | int }}); do
+      {{ __postgresql_bin_dir }}/pg_isready -q -h {{ postgresql_objects_login_unix_socket | quote }} \
+        -p {{ postgresql_objects_port | int }} -d postgres && exit 0
+      sleep 1
+    done
+    exit 1
+  args:
+    executable: /bin/bash
+  register: __postgresql_ready
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Fail if the managed instance is not running
+  ansible.builtin.fail:
+    msg: >-
+      PostgreSQL on {{ postgresql_objects_login_unix_socket }} port {{ postgresql_objects_port }} does not accept
+      connections after {{ postgresql_objects_wait_timeout }} s, users and databases cannot be managed.
+  when:
+    - __postgresql_ready.rc != 0
+    - postgresql_manage_service
+    - postgresql_start_conf != 'disabled'
+    - not ansible_check_mode
+
+- name: Ask the local instance whether it is a replica
+  ansible.builtin.command:
+    cmd: >-
+      {{ __postgresql_bin_dir }}/psql -XAtq -h {{ postgresql_objects_login_unix_socket }}
+      -p {{ postgresql_objects_port }} -U {{ postgresql_objects_login_user }} -d postgres
+      -c "SELECT pg_is_in_recovery()"
+  become: true
+  become_user: postgres
+  register: __postgresql_in_recovery
+  changed_when: false
+  check_mode: false
+  when: __postgresql_ready.rc == 0
+
+- name: Decide whether to manage objects on this node
+  ansible.builtin.set_fact:
+    __postgresql_objects_primary: "{{ __postgresql_ready.rc == 0 and __postgresql_in_recovery.stdout == 'f' }}"
+    __postgresql_objects_target: >-
+      {{ __postgresql_ready.rc == 0
+         and (__postgresql_in_recovery.stdout == 'f' or not postgresql_objects_primary_only)
+         and not (ansible_check_mode and __postgresql_psycopg is changed) }}
+
+- name: Report why objects are skipped on this node
+  ansible.builtin.debug:
+    msg: >-
+      {% if __postgresql_ready.rc != 0 %}PostgreSQL is not running here (e.g. Patroni not started yet):
+      users, databases and privileges are skipped. Run the role again once the cluster is up.
+      {% elif ansible_check_mode and __postgresql_psycopg is changed %}--check: python3-psycopg2 is not installed
+      yet, users, databases and privileges cannot be checked.
+      {% else %}This node is a replica: users, databases and privileges are managed on the primary.{% endif %}
+  when: not __postgresql_objects_target | bool
+
+- name: Manage objects on the primary
+  when: __postgresql_objects_target | bool
+  become: true
+  become_user: postgres
+  module_defaults:
+    group/community.postgresql.all:
+      login_unix_socket: "{{ postgresql_objects_login_unix_socket }}"
+      port: "{{ postgresql_objects_port | int }}"
+      login_user: "{{ postgresql_objects_login_user }}"
+  block:
+    - name: Create or update users
+      community.postgresql.postgresql_user:
+        name: "{{ item.name }}"
+        password: "{{ item.password | default(omit) }}"
+        role_attr_flags: "{{ item.role_attr_flags | default('LOGIN') }}"
+        conn_limit: "{{ item.conn_limit | default(omit) }}"
+        no_password_changes: "{{ (item.update_password | default(postgresql_users_update_password)) == 'on_create' }}"
+        login_db: postgres
+        state: present
+      loop: "{{ __postgresql_users_present }}"
+      loop_control:
+        label: "{{ item.name }}"
+      # no_log hides the label too, the changed users are listed by the next task.
+      no_log: true
+      register: __postgresql_users_result
+
+    - name: Report created or updated users
+      ansible.builtin.debug:
+        msg: >-
+          Users created or updated: {{ __postgresql_users_present | map(attribute='name')
+          | zip(__postgresql_users_result.results | map(attribute='changed'))
+          | selectattr(1) | map(attribute=0) | join(', ') }}
+      when: __postgresql_users_result.results | selectattr('changed') | list | length > 0
+
+    # After all roles exist, so group roles listed in postgresql_users can be granted.
+    - name: Grant group memberships
+      community.postgresql.postgresql_membership:
+        target_roles: ["{{ item }}"]
+        groups: "{{ (__postgresql_users_present | selectattr('name', 'eq', item) | first).groups }}"
+        state: "{{ 'exact' if postgresql_users_exclusive_groups | bool else 'present' }}"
+        login_db: postgres
+      loop: "{{ __postgresql_users_with_groups }}"
+      register: __postgresql_memberships
+
+    - name: Create or drop databases
+      community.postgresql.postgresql_db:
+        name: "{{ item.name }}"
+        owner: "{{ item.owner | default(omit) }}"
+        encoding: "{{ item.encoding | default(omit) }}"
+        lc_collate: "{{ item.lc_collate | default(omit) }}"
+        lc_ctype: "{{ item.lc_ctype | default(omit) }}"
+        template: "{{ item.template | default(omit) }}"
+        maintenance_db: postgres
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ postgresql_databases }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.state | default('present') }})"
+
+    - name: Grant or revoke privileges
+      community.postgresql.postgresql_privs:
+        login_db: "{{ item.database }}"
+        roles: "{{ item.roles }}"
+        privs: "{{ item.privs }}"
+        type: "{{ item.type | default('database') }}"
+        objs: "{{ item.objs | default(omit) }}"
+        schema: "{{ item.schema | default(omit) }}"
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ postgresql_privileges }}"
+      loop_control:
+        label: "{{ item.privs }} on {{ item.type | default('database') }} {{ item.objs | default(item.database) }} to {{ item.roles }}"
+
+    # DROP ROLE without CASCADE: fails if the role still owns objects (fail_on_user default).
+    # Loops over names only: no password can reach the output, the module error stays visible.
+    - name: Drop users
+      community.postgresql.postgresql_user:
+        name: "{{ item }}"
+        login_db: postgres
+        state: absent
+      loop: "{{ __postgresql_users_absent | map(attribute='name') | list }}"
+      register: __postgresql_users_dropped
+
+    - name: Report dropped users
+      ansible.builtin.debug:
+        msg: >-
+          Users dropped: {{ __postgresql_users_dropped.results | selectattr('changed') | map(attribute='item') | join(', ') }}
+      when: __postgresql_users_dropped.results | selectattr('changed') | list | length > 0

@@ -20,3 +20,9 @@
 - name: Configure PostgreSQL
   ansible.builtin.import_tasks: configure.yml
   tags: [postgresql, postgresql_config]
+
+# Can also be run on its own: include_role with tasks_from: objects.yml (e.g. after pastir.patroni).
+- name: Manage users, databases and privileges
+  ansible.builtin.import_tasks: objects.yml
+  when: __postgresql_manage_objects | bool
+  tags: [postgresql, postgresql_objects]

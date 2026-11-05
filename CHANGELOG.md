@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.2.0 — 2026-11
+
+### Added
+- Users, databases and database privileges: `postgresql_users`, `postgresql_users_update_password`,
+  `postgresql_databases`, `postgresql_privileges` (`community.postgresql`, now in `meta/requirements.yml`).
+- Group memberships: `groups` in `postgresql_users` items (`postgresql_membership`), additive by default,
+  `postgresql_users_exclusive_groups: true` revokes unlisted ones. Group roles are plain items with `NOLOGIN`.
+  Users without `password` and databases without `owner` keep their current password / owner.
+- Changes are made only on the primary (`SELECT pg_is_in_recovery()`), so the same play works on a standalone
+  server and on every node of a Patroni cluster (`postgresql_objects_primary_only`).
+- `postgresql_objects_wait_timeout`: wait for the instance; skip with a message on nodes where the role does not
+  manage the service (Patroni) and in `--check`.
+- Dropping a database requires `postgresql_allow_drop_database: true`; users are dropped without CASCADE.
+- `tasks_from: objects.yml` entry point and the `postgresql_objects` tag.
+- `python3-psycopg2` is installed when any of the lists is not empty.
+- Non-breaking: all lists are empty by default, nothing changes for existing playbooks.
+
 ## 2.1.0 — 2026-11
 
 ### Changed

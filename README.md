@@ -1,7 +1,8 @@
 # pastir.postgresql
 
 Installs PostgreSQL from the official PGDG repository with an exact, held version. For standalone servers
-it can also manage configuration parameters, `pg_hba.conf` and the cluster start mode.
+it can also manage configuration parameters, `pg_hba.conf` and the cluster start mode. On any server
+(standalone or a Patroni cluster) it can manage users, databases and database privileges on the primary.
 
 What the role guarantees:
 - **No implicit upgrades.** If the installed minor version differs from `postgresql_minor_version`, the
@@ -55,6 +56,67 @@ so `pastir.patroni` stops with an error when it sees `postgresql_start_conf` oth
 | `postgresql_conf_file` | `90-ansible.conf` | |
 | `postgresql_hba_entries` | `[]` | If not empty, `pg_hba.conf` is fully managed. Items: `type`, `database`, `user`, `address`, `method`, `options`, `comment` |
 | `postgresql_restart_allowed` | `false` | Restart automatically when a changed parameter needs it |
+| `postgresql_users` | `[]` | Users (roles). Items: `name` (required), `password` (plaintext, optional), `role_attr_flags` (default `LOGIN`, e.g. `LOGIN,CREATEDB`), `conn_limit`, `update_password` (`always` \| `on_create`), `groups` (list), `state` (`present` \| `absent`). Group roles are items with `role_attr_flags: NOLOGIN` and no password |
+| `postgresql_users_update_password` | `always` | `always`: set the password when it differs (hashes are compared, no change otherwise). `on_create`: only when the user is created |
+| `postgresql_users_exclusive_groups` | `false` | `false`: memberships are only added. `true`: users with `groups` become members of exactly these groups, others are revoked |
+| `postgresql_databases` | `[]` | Items: `name` (required), `owner`, `encoding`, `lc_collate`, `lc_ctype`, `template`, `state` (`present` \| `absent`) |
+| `postgresql_allow_drop_database` | `false` | Required to drop a database (`state: absent`); without it the role stops before any change |
+| `postgresql_privileges` | `[]` | `community.postgresql.postgresql_privs` items: `database`, `roles`, `privs` (required), `type` (default `database`), `objs`, `schema`, `state` |
+| `postgresql_objects_primary_only` | `true` | Manage users/databases/privileges only where `pg_is_in_recovery()` is false |
+| `postgresql_objects_wait_timeout` | `30` | Seconds to wait for the local instance before managing objects |
+| `postgresql_objects_login_unix_socket` | `/var/run/postgresql` | Socket directory used by the modules |
+| `postgresql_objects_port` | `5432` | |
+| `postgresql_objects_login_user` | `postgres` | Database user; the role connects as OS user `postgres` (peer authentication) |
+
+## Users and databases
+
+```yaml
+postgresql_users:
+  - {name: readonly, role_attr_flags: NOLOGIN}   # group role, its privileges may be managed by hand
+  - name: report
+    groups: [readonly]                            # no password: an existing password is not touched
+  - name: app
+    password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=kv/data/db:app_password') }}"
+    role_attr_flags: LOGIN
+    conn_limit: 50
+postgresql_databases:
+  - {name: app, owner: app, encoding: UTF8, lc_collate: C.UTF-8, lc_ctype: C.UTF-8, template: template0}
+postgresql_privileges:
+  - {database: app, roles: report, privs: CONNECT}
+```
+
+- **Primary only.** Before any change the role runs `SELECT pg_is_in_recovery()` on the local instance
+  (read-only, also in `--check`). Objects are managed only where it returns `false`: on a standalone server
+  and on the leader of a cluster. Replicas are skipped with a message and receive the objects by replication.
+  The role does not talk to Patroni. `postgresql_objects_primary_only: false` disables the check.
+- **Instance not running.** The role waits up to `postgresql_objects_wait_timeout` seconds for the instance
+  (`pg_isready`). If it is still down, the objects are skipped with a message when
+  `postgresql_manage_service: false` (Patroni nodes) or in `--check`; otherwise the role fails.
+- **Patroni.** On a fresh cluster `pastir.postgresql` runs before `pastir.patroni`, so PostgreSQL is not running
+  yet and the objects are skipped. Run the objects part again after Patroni, on all cluster nodes:
+
+  ```yaml
+  - role: pastir.patroni
+  - role: pastir.postgresql
+    tasks_from: objects.yml   # or the whole role again
+  ```
+
+- **Connection.** As OS user `postgres` over the unix socket (peer authentication). `python3-psycopg2` is
+  installed only when one of the lists is not empty.
+- **Passwords** are plaintext in the variables and hashed by PostgreSQL according to `password_encryption`
+  (scram-sha-256 by default). Take them from a secret store (Vault lookup, ansible-vault), never commit them.
+  The user task runs with `no_log` (Ansible then hides even the loop label); the next task lists the names of
+  created/updated users. With `community.postgresql` >= 4.0 an unchanged
+  password is detected against the stored SCRAM hash, so `always` is idempotent; use `on_create` if the
+  password is rotated outside Ansible (note: `on_create` also ignores `conn_limit` changes of existing users).
+- **Not touched.** A user without `password` keeps its current password (e.g. certificate authentication or a
+  password set by hand). A database without `owner` keeps its current owner.
+- **Groups.** All roles of `postgresql_users` are created first, then memberships (`groups`) are granted, so group
+  roles can be listed in any order. Memberships are additive; with `postgresql_users_exclusive_groups: true` the
+  memberships not listed are revoked for users that have `groups` (`groups: []` revokes all).
+- **Dropping.** `state: absent` for a database requires `postgresql_allow_drop_database: true`. `state: absent`
+  for a user runs `DROP ROLE` without `CASCADE`: it fails if the user still owns objects or has privileges.
+- Tag `postgresql_objects` runs only this part: `--tags postgresql_objects`.
 
 ## Example
 
@@ -84,7 +146,11 @@ For `pg_hba.conf`, copy the current rules into `postgresql_hba_entries` first an
 ## Testing
 
 `molecule test`: standalone servers on 24.04 and 26.04, plus a Patroni-style node. The test checks
-idempotence, reload without restart, the pending-restart report and the version guard.
+idempotence, reload without restart, the pending-restart report, the version guard, users/databases/privileges
+(login with the password over TCP, the drop guard, no CASCADE on user drop, `--check`), and that the objects are
+skipped on the Patroni-style node. The cluster case is covered by the `pastir.patroni` molecule test.
+
+Requires the `community.postgresql` collection (`meta/requirements.yml`).
 
 ## Installation
 

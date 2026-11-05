@@ -32,6 +32,35 @@ provisioner:
       all:
         postgresql_version: "15"
         postgresql_minor_version: "15.19"
+        # Users, databases, privileges: created on standalone servers (primary),
+        # skipped on pg-patroni-node (no running instance, postgresql_manage_service: false).
+        # Group roles are listed after their members on purpose: all roles are created before memberships.
+        # cert_user has no password: a password set outside Ansible must stay untouched.
+        postgresql_users:
+          - name: app_user
+            password: "app'pass#1"
+            role_attr_flags: LOGIN,CREATEDB
+            conn_limit: 20
+            groups: [readonly]
+          - name: report_user
+            password: "report pass 2"
+          - name: cert_user
+            groups: [readonly, writers]
+          - {name: readonly, role_attr_flags: NOLOGIN}
+          - {name: writers, role_attr_flags: NOLOGIN}
+          - name: no_such_user
+            state: absent
+        postgresql_databases:
+          - name: appdb
+            owner: app_user
+            encoding: UTF8
+            template: template0
+          # No owner: the owner of the existing database must not be changed.
+          - name: legacydb
+        postgresql_privileges:
+          - database: appdb
+            roles: report_user
+            privs: CREATE
       standalone:
         postgresql_conf:
           max_connections: 150
@@ -47,6 +76,7 @@ provisioner:
         postgresql_create_main_cluster: false
         postgresql_start_conf: manual
         postgresql_manage_service: false
+        postgresql_objects_wait_timeout: 3
 scenario:
   test_sequence:
     - destroy

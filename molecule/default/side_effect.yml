@@ -2,6 +2,10 @@
 # 1. A reloadable parameter change is applied without restart.
 # 2. A restart-only parameter is reported, not applied (restart not allowed).
 # 3. Requesting another minor version must fail without postgresql_allow_upgrade.
+# 4. Users/databases: dropping a database needs postgresql_allow_drop_database, dropping a role that owns
+#    objects fails (no CASCADE), --check creates nothing.
+# 5. Items without password / owner do not touch them; memberships are additive unless
+#    postgresql_users_exclusive_groups: true.
 - name: Change parameters on a running server
   hosts: standalone
   become: true
@@ -50,3 +54,136 @@
         - name: The guard is what stopped the role
           ansible.builtin.assert:
             that: "'postgresql_allow_upgrade' in ansible_failed_result.msg"
+
+- name: Users and databases guards
+  hosts: standalone
+  become: true
+  tasks:
+    - name: Dropping a database without postgresql_allow_drop_database must be refused
+      block:
+        - name: Request to drop appdb
+          ansible.builtin.include_role:
+            name: pastir.postgresql
+            tasks_from: objects.yml
+          vars:
+            postgresql_databases:
+              - {name: appdb, state: absent}
+
+        - name: The role must not get here
+          ansible.builtin.fail:
+            msg: Drop guard did not stop the role
+      rescue:
+        - name: The drop guard is what stopped the role
+          ansible.builtin.assert:
+            that: "'postgresql_allow_drop_database' in ansible_failed_result.msg"
+
+    - name: Dropping a role that owns a database must fail (no CASCADE)
+      block:
+        - name: Request to drop app_user
+          ansible.builtin.include_role:
+            name: pastir.postgresql
+            tasks_from: objects.yml
+          vars:
+            postgresql_users:
+              - {name: app_user, state: absent}
+
+        - name: The role must not get here
+          ansible.builtin.fail:
+            msg: app_user was dropped although it owns appdb
+      rescue:
+        - name: The DROP itself failed
+          ansible.builtin.assert:
+            that: ansible_failed_task.name == 'Drop users'
+
+    - name: Run the role in --check with a new user and database
+      ansible.builtin.include_role:
+        name: pastir.postgresql
+        apply:
+          check_mode: true
+      vars:
+        postgresql_users:
+          - {name: check_user, password: secret}
+        postgresql_databases:
+          - {name: checkdb, owner: check_user}
+
+    - name: Nothing was created in --check, appdb and app_user are still there
+      ansible.builtin.command: >-
+        psql -XAtq -c "SELECT (SELECT count(*) FROM pg_roles WHERE rolname IN ('check_user', 'app_user'))
+        || ',' || (SELECT count(*) FROM pg_database WHERE datname IN ('checkdb', 'appdb'))"
+      become: true
+      become_user: postgres
+      register: __objects
+      changed_when: false
+      failed_when: __objects.stdout != '1,1'
+
+- name: Changes made outside Ansible are kept
+  hosts: standalone
+  become: true
+  tasks:
+    - name: Set a password, an owner and an extra membership by hand
+      ansible.builtin.command: >-
+        psql -XAtq -v ON_ERROR_STOP=1
+        -c "ALTER ROLE cert_user PASSWORD 'set by hand'"
+        -c "ALTER DATABASE legacydb OWNER TO app_user"
+        -c "CREATE ROLE extra_group NOLOGIN"
+        -c "GRANT extra_group TO app_user"
+      become: true
+      become_user: postgres
+      changed_when: true
+
+    - name: Read the hand-made state
+      ansible.builtin.command: &state >-
+        psql -XAtq -c "SELECT (SELECT rolpassword FROM pg_authid WHERE rolname = 'cert_user')
+        || '|' || (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'legacydb')
+        || '|' || (SELECT string_agg(b.rolname, ',' ORDER BY b.rolname) FROM pg_auth_members m
+                   JOIN pg_roles u ON u.oid = m.member JOIN pg_roles b ON b.oid = m.roleid WHERE u.rolname = 'app_user')"
+      become: true
+      become_user: postgres
+      register: __hand_before
+      changed_when: false
+
+    - name: Run the objects part with the scenario variables
+      ansible.builtin.include_role:
+        name: pastir.postgresql
+        tasks_from: objects.yml
+
+    - name: Nothing was changed by the role
+      ansible.builtin.assert:
+        that:
+          - __postgresql_users_result.results | selectattr('changed') | list | length == 0
+          - __postgresql_users_dropped.results | selectattr('changed') | list | length == 0
+          - __postgresql_memberships.results | selectattr('changed') | list | length == 0
+
+    - name: Read the state after the role
+      ansible.builtin.command: *state
+      become: true
+      become_user: postgres
+      register: __hand_after
+      changed_when: false
+
+    - name: Password, owner and the extra membership are kept
+      ansible.builtin.assert:
+        that:
+          - __hand_after.stdout == __hand_before.stdout
+          - __hand_after.stdout is search('^SCRAM-SHA-256\\$.*\\|app_user\\|extra_group,readonly$')
+
+    - name: Run the objects part with exclusive groups
+      ansible.builtin.include_role:
+        name: pastir.postgresql
+        tasks_from: objects.yml
+      vars:
+        postgresql_users_exclusive_groups: true
+
+    - name: Read memberships after the exclusive run
+      ansible.builtin.command: >-
+        psql -XAtq -c "SELECT u.rolname || ':' || string_agg(b.rolname, ',' ORDER BY b.rolname) FROM pg_auth_members m
+        JOIN pg_roles u ON u.oid = m.member JOIN pg_roles b ON b.oid = m.roleid
+        WHERE u.rolname IN ('app_user', 'cert_user') GROUP BY u.rolname ORDER BY u.rolname"
+      become: true
+      become_user: postgres
+      register: __members
+      changed_when: false
+
+    - name: The unlisted membership was revoked, the listed ones kept
+      ansible.builtin.assert:
+        that: __members.stdout_lines == ['app_user:readonly', 'cert_user:readonly,writers']
