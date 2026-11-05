@@ -13,6 +13,11 @@
         url: "{{ postgresql_repo_key_url }}"
         dest: "{{ __postgresql_keyring }}"
         mode: "0644"
+        timeout: 30
+      register: __postgresql_key
+      until: __postgresql_key is succeeded
+      retries: 5
+      delay: 5
 
     - name: Add PGDG apt source
       ansible.builtin.deb822_repository:

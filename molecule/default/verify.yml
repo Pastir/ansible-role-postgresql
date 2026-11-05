@@ -39,9 +39,20 @@
       changed_when: false
       failed_when: __hba.stdout | int != 4
 
-    - name: Cluster start mode is auto
-      ansible.builtin.command: grep -qx auto /etc/postgresql/15/main/start.conf
-      changed_when: false
+    - name: Read start.conf
+      ansible.builtin.slurp:
+        src: /etc/postgresql/15/main/start.conf
+      register: __start_conf
+
+    - name: Cluster start mode is auto, stock comments of pg_createcluster are kept
+      vars:
+        __lines: "{{ (__start_conf.content | b64decode).splitlines() }}"
+      ansible.builtin.assert:
+        that:
+          - __lines | select('match', '^\\s*(auto|manual|disabled)\\s*$') | list == ['auto']
+          - "'# Automatic startup configuration' in __lines"
+          - __lines | select('match', '^#\\s+manual:\\s') | list | length == 1
+          - __lines | select('search', 'Ansible') | list | length == 0
 
 - name: Verify Patroni node layout
   hosts: patroni_node

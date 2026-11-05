@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.0 — 2026-11
+
+### Changed
+- `start.conf`: only the mode line (`auto`/`manual`/`disabled`) is managed (`lineinfile`), the rest of the file
+  is kept. Variable and values are unchanged. Files written by 2.0.0 keep their old
+  "Managed by Ansible" comment lines; remove them by hand if needed.
+
+### Fixed
+- The stock comments of `start.conf` were replaced with the role's own text (non-zero diff on existing servers).
+- `start.conf` was rewritten on every run when `pastir.patroni` ran on the same host (different file text).
+  Both roles now converge to the same file; use `postgresql_start_conf: manual` on Patroni nodes.
+- The PGDG key download failed on a single TLS timeout; it now retries (5 times, 30 s timeout).
+
 ## 2.0.0 — 2026-11
 
 ### BREAKING

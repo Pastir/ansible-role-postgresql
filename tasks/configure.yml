@@ -4,13 +4,15 @@
     path: "{{ postgresql_config_dir }}"
   register: __postgresql_cfgdir
 
+# Only the mode line is managed: the stock comments of pg_createcluster are kept, and
+# pastir.patroni (patroni_pg_start_conf_manual) converges to the same file.
 - name: Set cluster start mode (start.conf)
-  ansible.builtin.copy:
-    dest: "{{ postgresql_config_dir }}/start.conf"
-    content: |
-      # Managed by Ansible (pastir.postgresql), do not edit.
-      # auto: started by the init script / manual: only pg_ctlcluster / disabled: never
-      {{ postgresql_start_conf }}
+  ansible.builtin.lineinfile:
+    path: "{{ postgresql_config_dir }}/start.conf"
+    regexp: '^\s*(auto|manual|disabled)\s*$'
+    line: "{{ postgresql_start_conf }}"
+    insertafter: EOF
+    create: true
     owner: postgres
     group: postgres
     mode: "0644"

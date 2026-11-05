@@ -28,6 +28,7 @@ postgresql_config_dir: "/etc/postgresql/{{ postgresql_version }}/{{ postgresql_c
 postgresql_create_main_cluster: true
 # How postgresql-common starts the cluster: auto | manual | disabled.
 # Use "manual" on Patroni nodes: the cluster must never be started by systemd behind Patroni's back.
+# Only the mode line of start.conf is changed, the stock comments are kept (same as pastir.patroni).
 postgresql_start_conf: auto
 # Manage the postgresql@<version>-<cluster> service (enable + start). Set false on Patroni nodes.
 postgresql_manage_service: true
