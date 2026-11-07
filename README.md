@@ -150,7 +150,7 @@ idempotence, reload without restart, the pending-restart report, the version gua
 (login with the password over TCP, the drop guard, no CASCADE on user drop, `--check`), and that the objects are
 skipped on the Patroni-style node. The cluster case is covered by the `pastir.patroni` molecule test.
 
-Requires the `community.postgresql` collection (`meta/requirements.yml`).
+Requires the `community.postgresql` collection (`requirements.yml` in the role root).
 
 ## Installation
 
@@ -160,10 +160,14 @@ roles:
   - name: pastir.postgresql
     src: git+git@github.com:Pastir/ansible-role-postgresql.git
     version: main  # or a tag
+# A role cannot install collections by itself: the project lists them (see requirements.yml in the role root).
+collections:
+  - name: community.postgresql
+    version: ">=4.0.0"
 ```
 
 ```bash
-ansible-galaxy install -r requirements.yml
+ansible-galaxy install -r requirements.yml   # roles and collections
 ```
 
 ## License
